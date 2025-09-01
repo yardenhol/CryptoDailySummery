@@ -1,32 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-Daily Crypto Summary
-- Fetches crypto news (RSS) and market data (CoinGecko)
-- Summarizes in Hebrew via OpenAI (if quota available), with robust retry
-- Falls back to a raw digest email if OpenAI is unavailable (429/other)
-- Sends the email via SendGrid (if SENDGRID_API_KEY present) or SMTP
+Daily Crypto Summary (HTML + JSON output)
+- Fetch crypto news (RSS) & market data (CoinGecko)
+- Ask OpenAI to return a structured JSON summary (Hebrew)
+- Render a clean RTL HTML email (with plain-text alternative)
+- Fallback to basic HTML if OpenAI quota/connection fails
 
-Environment variables (GitHub Secrets recommended):
+Environment (GitHub Secrets):
+  # Common
+  OPENAI_API_KEY      -> Optional (if missing or failing, fallback HTML is sent)
+  EMAIL_TO            -> Recipient email
 
-Required (common):
-  OPENAI_API_KEY            -> OpenAI API key (for full summary; optional for fallback-only runs)
-  EMAIL_TO                  -> Recipient email address
-
-SendGrid path (preferred if available):
-  SENDGRID_API_KEY
-  EMAIL_FROM                -> Verified sender (Single Sender or domain-auth)
-  # EMAIL_TO used from common
-
-SMTP path (if no SENDGRID_API_KEY):
-  EMAIL_HOST                -> e.g. smtp.gmail.com
-  EMAIL_PORT                -> e.g. 587
-  EMAIL_USER                -> e.g. yourname@gmail.com
-  EMAIL_PASS                -> App Password (Gmail) or SMTP password
-  # EMAIL_TO used from common
-
-Notes:
-- CoinGecko endpoints are public and free (no key).
-- RSS feeds are public.
+  # Gmail / SMTP
+  EMAIL_HOST          -> smtp.gmail.com
+  EMAIL_PORT          -> 587
+  EMAIL_USER          -> yourname@gmail.com
+  EMAIL_PASS          -> Gmail App Password (16 chars)
 
 Author: ChatGPT
 """
@@ -54,28 +43,19 @@ YEST = NOW - timedelta(days=1)
 # ==== Env ====
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-# SendGrid
-SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY")
-EMAIL_FROM = os.environ.get("EMAIL_FROM")
-
-# SMTP
 EMAIL_HOST = os.environ.get("EMAIL_HOST")
 EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587")) if os.environ.get("EMAIL_PORT") else None
 EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_PASS = os.environ.get("EMAIL_PASS")
-
-# Common
 EMAIL_TO   = os.environ.get("EMAIL_TO")
 
 # ==== RSS sources ====
 RSS_SOURCES = [
-    # General crypto
     "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml",
     "https://cointelegraph.com/rss",
     "https://cryptopotato.com/feed/",
     "https://cryptoslate.com/feed/",
     "https://cryptonews.com/news/feed/",
-    # Regulation / SEC
     "https://www.sec.gov/news/pressreleases.rss",
 ]
 
@@ -131,7 +111,6 @@ def fetch_news():
             continue
         seen.add(key)
         deduped.append(it)
-    # limit to safe number for prompt size
     return deduped[:120]
 
 # ==== Step 2: Fetch market data (CoinGecko) ====
@@ -180,13 +159,25 @@ def fetch_market():
 
     return out
 
-# ==== Step 3: OpenAI summary (Hebrew), with prompt control ====
-def generate_summary(news_items, market_data):
-    # Lazily import to avoid dependency if running fallback-only
+# ==== OpenAI: ask for JSON summary ====
+def generate_summary_json(news_items, market_data):
+    """
+    Returns a dict with keys:
+    {
+      "date": "DD.MM.YYYY",
+      "tldr": "…",
+      "market": {"cap": "...", "volume": "...", "movers": "...", "btc": "...", "eth": "..."},
+      "news": [{"title":"...", "summary":"...", "source":"...", "link":"..."}],
+      "regulation": ["...", "..."],
+      "points": ["...", "..."],
+      "future": ["...", "..."],
+      "links": ["http://...", ...]
+    }
+    """
     from openai import OpenAI
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    # reduce payload size
+    # Reduce payload to keep cost small
     news_for_model = [
         {
             "source": n["source"],
@@ -194,7 +185,7 @@ def generate_summary(news_items, market_data):
             "summary": n["summary"][:500],
             "link": n["link"],
             "published": n["published"]
-        } for n in news_items[:60]
+        } for n in news_items[:50]
     ]
 
     payload = {
@@ -202,91 +193,201 @@ def generate_summary(news_items, market_data):
         "window": "24h (מאז אתמול בשעה 08:00 ועד היום 08:00 לפי Asia/Jerusalem)",
         "news": news_for_model,
         "market": market_data,
-        "audience": "משקיע חכם עסוק, דובר עברית, רוצה עדכון ענייני ומהיר + הרחבות לימודיות קצרות",
+        "audience": "משקיע חכם עסוק, דובר עברית",
     }
 
     system_prompt = (
-        "את/ה עורך/כת ומורה לקריפטו. כתוב/כתבי סיכום יומי בעברית פשוטה, מחולק לקטגוריות, "
-        "שמשלב עדכון נוח לקריאה עם הסבר קצר למי שרוצה להבין יותר לעומק. "
-        "שמור/שמרי על עובדות מדויקות, ללא היפותזות לא מבוססות או המלצות השקעה."
+        "את/ה עורך/כת ומורה לקריפטו. החזר/י אך ורק JSON חוקי בעברית, לפי הסכמה שניתנת. "
+        "אל תוסיף/י טקסט חופשי מחוץ ל-JSON."
     )
 
-    user_prompt = f"""
-מפרט הסיכום:
-1) כותרת: "עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')}"
-2) פתיח חד-שורה (TL;DR).
-3) שוק בזמן אמת:
-   • שווי שוק כולל, נפח 24ש', בולטי 24ש' (Top Movers).
-   • BTC/ETH: מחיר, שינוי 24ש', טווח 24ש'.
-4) חדשות מרכזיות (5–10 נקודות): כותרת קצרה → 2–3 שורות מהות + למה זה חשוב. ציין מקור בסוגריים.
-5) רגולציה ואכיפה: פעולות רגולטורים/SEC וכו'.
-6) נקודות לימודיות קצרות: 3–5 נק'.
-7) ראדרים להמשך (אירועים/דאטה לשים אליהם לב מחר).
-8) בסוף: קישורים למקורות (רשימה ממוספרת, רק מהחדשות ששימשו).
-
-הנתונים (JSON):
-{json.dumps(payload, ensure_ascii=False)}
-
-כללי סגנון:
-- עברית ברורה, לא סלנג, בלי המלצות קנייה/מכירה.
-- ללא טבלאות כבדות; בולטים קצרים וברורים.
-- אם נתון חסר, לדלג בשקט (לא להמציא).
+    schema_hint = """
+החזר אובייקט JSON עם השדות הבאים בלבד:
+{
+  "date": "DD.MM.YYYY",
+  "tldr": "שורה אחת מסכמת",
+  "market": {
+    "cap": "שווי שוק כולל",
+    "volume": "נפח מסחר 24ש׳",
+    "movers": "Top movers (שורה קצרה)",
+    "btc": "BTC: מחיר, שינוי 24ש׳, טווח 24ש׳",
+    "eth": "ETH: מחיר, שינוי 24ש׳, טווח 24ש׳"
+  },
+  "news": [
+    { "title": "כותרת", "summary": "2–3 שורות מהות ולמה חשוב", "source": "מקור", "link": "URL" }
+  ],
+  "regulation": ["נקודה", "נקודה"],
+  "points": ["נקודה לימודית", "נקודה לימודית"],
+  "future": ["ראדרים להמשך", "ראדרים"],
+  "links": ["URL1", "URL2", "URL3"]
+}
 """
 
-    # Model: ניתן להחליף לדגם חסכוני יותר במקרה הצורך
+    user_prompt = f"""
+יצר/י תקציר יומי בעברית לפי הסכמה (JSON) שלמעלה.
+דרישות:
+- קצר, ברור, ללא סלנג וללא המלצות קנייה/מכירה.
+- בחר/י 5–10 חדשות משמעותיות בלבד ל-news.
+- מילא/י "links" עם קישורים שהשתמשת בהם (1–8).
+- אם נתון חסר — דלג/י עליו, אל תמציא/י.
+- "date" בפורמט DD.MM.YYYY עבור התאריך היום בישראל.
+
+הנתונים (JSON לחומרי רקע):
+{json.dumps(payload, ensure_ascii=False)}
+"""
+
     resp = client.responses.create(
         model="gpt-4.1-mini",
         input=[
             {"role": "system", "content": system_prompt},
+            {"role": "user", "content": schema_hint.strip()},
             {"role": "user", "content": user_prompt}
         ],
+        response_format={"type": "json_object"},
         timeout=120
     )
-    content = resp.output_text
-    return content.strip()
+    txt = resp.output_text
+    return json.loads(txt)
 
-# ==== Fallback (raw digest without OpenAI) ====
-def build_raw_digest(news_items, market):
-    lines = []
-    lines.append(f"עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')} (מצב חירום: בלי מודל, תקציב/גישה ל-OpenAI לא זמינים)\n")
+# ==== HTML formatting (RTL) ====
+def format_email_html(summary_dict):
+    """Build styled RTL HTML email from the JSON summary"""
+    # Safe pulls
+    tldr = summary_dict.get("tldr", "")
+    mk  = summary_dict.get("market", {}) or {}
+    news = summary_dict.get("news", []) or []
+    regulation = summary_dict.get("regulation", []) or []
+    points = summary_dict.get("points", []) or []
+    future = summary_dict.get("future", []) or []
+    links = summary_dict.get("links", []) or []
 
-    # Global market
+    def li_list(items):
+        return "".join(f"<li>{clean(str(x))}</li>" for x in items if x)
+
+    news_html = "".join(
+        f'<li><b>{clean(n.get("title",""))}</b> — {clean(n.get("summary",""))} '
+        f'<i>({clean(n.get("source",""))})</i></li>'
+        for n in news
+    )
+    links_html = "".join(
+        f'<li><a href="{link}" target="_blank">{link}</a></li>' for link in links if link
+    )
+
+    html = f"""
+    <html dir="rtl" lang="he">
+      <body style="font-family: Arial, Helvetica, sans-serif; line-height:1.7; color:#1f2937; max-width:760px; margin:auto; padding:24px; background:#ffffff;">
+        <h2 style="text-align:center; margin:0 0 8px;">📊 עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')}</h2>
+        <p style="font-size:16px; margin:0 0 18px;"><b>TL;DR:</b> {clean(tldr)}</p>
+
+        <div style="background:#f1f5f9; padding:14px 16px; border-radius:10px; margin-top:14px;">
+          <h3 style="margin-top:0;">שוק בזמן אמת</h3>
+          <ul style="margin:8px 0 0 0; padding-inline-start:22px;">
+            <li>שווי שוק כולל: {clean(mk.get("cap",""))}</li>
+            <li>נפח מסחר 24ש׳: {clean(mk.get("volume",""))}</li>
+            <li>בולטי 24ש׳: {clean(mk.get("movers",""))}</li>
+            <li>{clean(mk.get("btc",""))}</li>
+            <li>{clean(mk.get("eth",""))}</li>
+          </ul>
+        </div>
+
+        <div style="margin-top:18px;">
+          <h3>חדשות מרכזיות</h3>
+          <ul style="margin:8px 0 0 0; padding-inline-start:22px;">{news_html}</ul>
+        </div>
+
+        <div style="margin-top:18px;">
+          <h3>רגולציה ואכיפה</h3>
+          <ul style="margin:8px 0 0 0; padding-inline-start:22px;">{li_list(regulation)}</ul>
+        </div>
+
+        <div style="margin-top:18px;">
+          <h3>נקודות לימודיות</h3>
+          <ul style="margin:8px 0 0 0; padding-inline-start:22px;">{li_list(points)}</ul>
+        </div>
+
+        <div style="margin-top:18px;">
+          <h3>ראדרים להמשך</h3>
+          <ul style="margin:8px 0 0 0; padding-inline-start:22px;">{li_list(future)}</ul>
+        </div>
+
+        <div style="margin-top:18px;">
+          <h3>🔗 קישורים למקורות</h3>
+          <ol style="margin:8px 0 0 0; padding-inline-start:22px;">{links_html}</ol>
+        </div>
+
+        <p style="color:#6b7280; font-size:12px; margin-top:24px;">נשלח אוטומטית ע״י הבוט. אין לראות באמור ייעוץ או שיווק השקעות.</p>
+      </body>
+    </html>
+    """
+    return html
+
+# ==== Fallback builder (when OpenAI not available) ====
+def build_fallback_summary_dict(news_items, market):
+    # Compose a minimal but readable dict
     g = (market or {}).get("global", {})
     mktcap = (g.get("total_market_cap") or {}).get("usd")
     vol24  = (g.get("total_volume") or {}).get("usd")
-    if mktcap or vol24:
-        lines.append("שוק בקצרה:")
-        if mktcap: lines.append(f"• שווי שוק כולל (USD): {pretty_money(mktcap)}")
-        if vol24:  lines.append(f"• נפח מסחר 24ש' (USD): {pretty_money(vol24)}")
 
-    # Top movers 24h
+    # Movers
     movers = sorted((market or {}).get("markets", []),
                     key=lambda c: (c.get("price_change_percentage_24h") or 0),
-                    reverse=True)[:10]
-    if movers:
-        lines.append("\nTop Movers 24ש':")
-        for c in movers:
-            chg = c.get("price_change_percentage_24h")
-            price = c.get("current_price")
-            lines.append(f"• {c.get('name')} ({(c.get('symbol') or '').upper()}): {chg:+.2f}% | ${price:,}")
+                    reverse=True)[:5]
+    movers_str = " / ".join(
+        f"{c.get('name')} {c.get('price_change_percentage_24h'):+.2f}%"
+        for c in movers if c.get("name") is not None
+    )
 
-    # News (8 latest)
-    lines.append("\nחדשות אחרונות (8):")
-    for n in news_items[:8]:
-        ts = n.get("published","")[:19].replace("T"," ")
-        title = n.get("title") or ""
-        source = n.get("source") or ""
-        lines.append(f"• {title} — {source} ({ts})")
-        if n.get("summary"):
-            lines.append(f"  {n['summary'][:180]}...")
+    # BTC / ETH lines (best-effort)
+    def find_coin(symbol):
+        for c in (market or {}).get("markets", []):
+            if (c.get("symbol") or "").lower() == symbol:
+                return c
+        return None
+
+    def coin_line(c, label):
+        if not c: return ""
+        price = c.get("current_price")
+        chg   = c.get("price_change_percentage_24h")
+        hi    = c.get("high_24h")
+        lo    = c.get("low_24h")
+        return f"{label}: ${price:,} ({chg:+.2f}%), טווח 24ש׳: ${lo:,}–${hi:,}"
+
+    btc = coin_line(find_coin("btc"), "BTC")
+    eth = coin_line(find_coin("eth"), "ETH")
+
+    # News top 7
+    news_top = news_items[:7]
+    news_struct = []
+    links = []
+    for n in news_top:
+        news_struct.append({
+            "title": n.get("title",""),
+            "summary": (n.get("summary") or "")[:200] + ("..." if (n.get("summary") and len(n["summary"])>200) else ""),
+            "source": n.get("source",""),
+            "link": n.get("link","")
+        })
         if n.get("link"):
-            lines.append(f"  {n['link']}")
+            links.append(n["link"])
 
-    lines.append("\nהערה: מייל זה נשלח במתכונת בסיסית עקב שגיאת מכסה/חיבור ב־OpenAI API.")
-    return "\n".join(lines)
+    return {
+        "date": NOW.strftime("%d.%m.%Y"),
+        "tldr": "עדכון יומי במתכונת בסיסית עקב חוסר זמינות מודל.",
+        "market": {
+            "cap": f"{pretty_money(mktcap)} $ (סה״כ)" if mktcap else "",
+            "volume": f"{pretty_money(vol24)} $ (24ש׳)" if vol24 else "",
+            "movers": movers_str or "",
+            "btc": btc,
+            "eth": eth,
+        },
+        "news": news_struct,
+        "regulation": [],
+        "points": [],
+        "future": [],
+        "links": links[:8]
+    }
 
-# ==== Send email (auto: SendGrid if available, else SMTP) ====
-def send_via_smtp(subject, body_md):
+# ==== Email sending (SMTP / Gmail) ====
+def send_email_html(subject, html_body, plain_fallback=""):
     host = EMAIL_HOST
     port = EMAIL_PORT
     user = EMAIL_USER
@@ -294,55 +395,26 @@ def send_via_smtp(subject, body_md):
     to   = EMAIL_TO
 
     if not all([host, port, user, pwd, to]):
-        raise RuntimeError("SMTP path selected but one or more SMTP env vars are missing.")
+        raise RuntimeError("SMTP env vars missing (EMAIL_HOST/PORT/USER/PASS/TO).")
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = formataddr(("Daily Crypto Bot", user))  # From must match EMAIL_USER for Gmail
+    msg["From"] = formataddr(("Daily Crypto Bot", user))  # For Gmail: From must equal EMAIL_USER
     msg["To"] = to
-    msg.attach(MIMEText(body_md or "—", "plain", _charset="utf-8"))
+
+    # Plain fallback + HTML
+    if plain_fallback:
+        msg.attach(MIMEText(plain_fallback, "plain", _charset="utf-8"))
+    msg.attach(MIMEText(html_body or "<html><body>—</body></html>", "html", _charset="utf-8"))
 
     ctx = ssl.create_default_context()
     with smtplib.SMTP(host, port, timeout=60) as s:
-        s.set_debuglevel(1)  # Print SMTP dialogue to Action log
-        s.ehlo()
-        s.starttls(context=ctx)
-        s.ehlo()
+        s.set_debuglevel(1)  # SMTP dialogue to logs
+        s.ehlo(); s.starttls(context=ctx); s.ehlo()
         s.login(user, pwd)
         resp = s.sendmail(user, [to], msg.as_string())
         if resp:
             raise RuntimeError(f"SMTP sendmail returned errors: {resp}")
-
-def send_via_sendgrid(subject, body_md):
-    if not SENDGRID_API_KEY:
-        raise RuntimeError("SENDGRID_API_KEY missing.")
-    if not EMAIL_FROM or not EMAIL_TO:
-        raise RuntimeError("EMAIL_FROM/EMAIL_TO missing for SendGrid path.")
-    try:
-        from sendgrid import SendGridAPIClient
-        from sendgrid.helpers.mail import Mail
-    except ImportError:
-        raise RuntimeError("sendgrid package not installed (pip install sendgrid).")
-
-    message = Mail(
-        from_email=EMAIL_FROM,
-        to_emails=EMAIL_TO,
-        subject=subject,
-        plain_text_content=body_md or "—"
-    )
-    sg = SendGridAPIClient(SENDGRID_API_KEY)
-    resp = sg.send(message)
-    print("SendGrid status:", resp.status_code)
-    if resp.status_code >= 300:
-        raise RuntimeError(f"SendGrid error: {resp.status_code} headers={dict(resp.headers)}")
-
-def send_email(subject, body_md):
-    if SENDGRID_API_KEY:
-        print("[INFO] Using SendGrid to send email.")
-        send_via_sendgrid(subject, body_md)
-    else:
-        print("[INFO] Using SMTP to send email.")
-        send_via_smtp(subject, body_md)
 
 # ==== Main ====
 def main():
@@ -353,29 +425,38 @@ def main():
     news = fetch_news()
     market = fetch_market()
 
-    # Try OpenAI summary (if key provided), with simple retry
-    summary = None
+    # Try OpenAI → JSON → HTML, with retry
+    summary_dict = None
     if OPENAI_API_KEY:
         last_err = None
         for attempt in range(3):
             try:
-                summary = generate_summary(news, market)
+                summary_dict = generate_summary_json(news, market)
+                # Basic sanity: must have keys
+                if not isinstance(summary_dict, dict) or "market" not in summary_dict:
+                    raise ValueError("Model returned unexpected structure.")
                 break
             except Exception as e:
                 last_err = e
-                print(f"[WARN] OpenAI summary failed (attempt {attempt+1}/3): {e}", file=sys.stderr)
+                print(f"[WARN] OpenAI JSON summary failed (attempt {attempt+1}/3): {e}", file=sys.stderr)
                 import time, random
                 time.sleep(2 * (attempt + 1) + random.random())
-        if not summary:
-            print("[INFO] Falling back to raw digest email (no OpenAI).", file=sys.stderr)
-            summary = build_raw_digest(news, market)
+
+        if not summary_dict:
+            print("[INFO] Falling back to basic structured dict (no OpenAI).", file=sys.stderr)
+            summary_dict = build_fallback_summary_dict(news, market)
     else:
-        print("[INFO] OPENAI_API_KEY not provided; sending raw digest.", file=sys.stderr)
-        summary = build_raw_digest(news, market)
+        print("[INFO] OPENAI_API_KEY not provided; sending fallback summary.", file=sys.stderr)
+        summary_dict = build_fallback_summary_dict(news, market)
 
     subject = f"עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')}"
-    send_email(subject, summary)
-    print("Email sent.")
+    html_body = format_email_html(summary_dict)
+
+    # Optional simple plain text (short)
+    plain = f"עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')}\n\nTL;DR: {summary_dict.get('tldr','')}\n\nלקבלת גרסה קריאה, פתח את המייל בתצוגת HTML."
+
+    send_email_html(subject, html_body, plain_fallback=plain)
+    print("Email sent (HTML).")
 
 if __name__ == "__main__":
     try:
