@@ -233,10 +233,9 @@ def generate_summary_json(news_items, market_data):
 נתוני רקע (JSON):
 {json.dumps(payload, ensure_ascii=False)}
 """
-
-    resp = client.responses.create(
+    resp = client.chat.completions.create(
         model="gpt-4.1-mini",
-        input=[
+        messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": schema_hint.strip()},
             {"role": "user", "content": user_prompt}
@@ -244,8 +243,9 @@ def generate_summary_json(news_items, market_data):
         response_format={"type": "json_object"},
         timeout=120
     )
-    txt = resp.output_text
+    txt = resp.choices[0].message.content
     return json.loads(txt)
+
 
 # ===== Translation guard (Hebrewize) =====
 _HEB_RX = re.compile(r"[א-ת]")
