@@ -1,0 +1,59 @@
+name: Daily Crypto Summary (08:00 Asia/Jerusalem)
+
+on:
+  schedule:
+    # GitHub Actions רץ לפי UTC בלבד. נריץ כל שעה ונעצור אם לא 08:00 בישראל,
+    # או לחלופין כל 30 דק'. כאן מממשים פעם בשעה כדי להיות יעילים.
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  daily-summary:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # מגדיר TZ לריצה עצמה (לא משנה את cron של GitHub, אבל מקל על בדיקת השעה)
+      - name: Set timezone to Asia/Jerusalem
+        uses: szenius/set-timezone@v2.0
+        with:
+          timezoneLinux: "Asia/Jerusalem"
+
+      - name: Continue only at 08:00 Asia/Jerusalem
+        id: gate
+        run: |
+          NOW_HOUR=$(date +'%H')
+          if [ "$NOW_HOUR" != "08" ]; then
+            echo "Not 08:00 Asia/Jerusalem (now: $NOW_HOUR). Exiting."
+            echo "continue=false" >> $GITHUB_OUTPUT
+            exit 0
+          else
+            echo "continue=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Python
+        if: steps.gate.outputs.continue == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        if: steps.gate.outputs.continue == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests feedparser python-dateutil pytz openai==1.* beautifulsoup4
+
+      - name: Run summary script
+        if: steps.gate.outputs.continue == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          EMAIL_HOST: ${{ secrets.EMAIL_HOST }}
+          EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+        run: |
+          python scripts/daily_crypto_summary.py
