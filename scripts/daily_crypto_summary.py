@@ -489,20 +489,29 @@ def build_fallback_summary_dict(news_items, market):
     }
 
 # ===== Email (SMTP / Gmail) =====
+def _parse_recipients(val):
+    """ממיר מחרוזת מיילים מופרדים בפסיקים/; לרשימה נקייה."""
+    if not val:
+        return []
+    parts = [p.strip() for p in re.split(r"[;,]", str(val)) if p.strip()]
+    return parts
+
 def send_email_html(subject, html_body, plain_fallback=""):
     host = EMAIL_HOST
     port = EMAIL_PORT
     user = EMAIL_USER
     pwd  = EMAIL_PASS
-    to   = EMAIL_TO
 
-    if not all([host, port, user, pwd, to]):
-        raise RuntimeError("SMTP env vars missing (EMAIL_HOST/PORT/USER/PASS/TO).")
+    # תמיכה לאחור: אם אין EMAIL_TO_LIST → נשתמש ב-EMAIL_TO
+    to_list = _parse_recipients(os.environ.get("EMAIL_TO_LIST") or EMAIL_TO)
+
+    if not all([host, port, user, pwd]) or not to_list:
+        raise RuntimeError("SMTP env vars missing or recipient list empty.")
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = formataddr(("Daily Crypto Bot", user))  # Gmail: From must equal EMAIL_USER
-    msg["To"] = to
+    msg["From"] = formataddr(("Daily Crypto Bot", user))
+    msg["To"] = ", ".join(to_list)
 
     if plain_fallback:
         msg.attach(MIMEText(plain_fallback, "plain", _charset="utf-8"))
@@ -510,12 +519,13 @@ def send_email_html(subject, html_body, plain_fallback=""):
 
     ctx = ssl.create_default_context()
     with smtplib.SMTP(host, port, timeout=60) as s:
-        s.set_debuglevel(1)  # SMTP dialog in logs
+        s.set_debuglevel(1)
         s.ehlo(); s.starttls(context=ctx); s.ehlo()
         s.login(user, pwd)
-        resp = s.sendmail(user, [to], msg.as_string())
+        resp = s.sendmail(user, to_list, msg.as_string())
         if resp:
             raise RuntimeError(f"SMTP sendmail returned errors: {resp}")
+
 
 # ===== Main =====
 def main():
