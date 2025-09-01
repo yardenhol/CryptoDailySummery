@@ -55,5 +55,6 @@ jobs:
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
           EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+          EMAIL_TO_LIST:  ${{ vars.EMAIL_TO_LIST }}      # חדש – רשימת נמענים
         run: |
           python scripts/daily_crypto_summary.py
