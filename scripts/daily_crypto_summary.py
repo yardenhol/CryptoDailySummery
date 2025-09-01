@@ -332,7 +332,7 @@ def hebrewize_summary_dict(d: dict) -> dict:
 
 # ===== HTML (RTL, clean) =====
 def format_email_html(summary_dict):
-    """RTL Hebrew HTML email – ברור, מרווח."""
+    """RTL Hebrew HTML email – קריא וברור מימין לשמאל"""
     tldr = summary_dict.get("tldr", "")
     mk  = summary_dict.get("market", {}) or {}
     news = summary_dict.get("news", []) or []
@@ -342,32 +342,36 @@ def format_email_html(summary_dict):
     links = summary_dict.get("links", []) or []
 
     def li_list(items):
-        return "".join(f'<li style="margin-bottom:6px;">{clean(str(x))}</li>' for x in items if x)
+        return "".join(f'<li style="margin-bottom:6px; text-align:right;">{clean(str(x))}</li>' for x in items if x)
 
     news_html = "".join(
-        '<li style="margin-bottom:10px;">'
-        f'<div style="font-weight:600; margin-bottom:2px;">{clean(n.get("title",""))}</div>'
-        f'<div style="color:#374151;">{clean(n.get("summary",""))} '
+        '<li style="margin-bottom:12px; text-align:right;">'
+        f'<div style="font-weight:600; margin-bottom:2px; text-align:right;">{clean(n.get("title",""))}</div>'
+        f'<div style="color:#374151; text-align:right;">{clean(n.get("summary",""))} '
         f'<span style="color:#6b7280; font-style:italic;">({clean(n.get("source",""))})</span></div>'
         '</li>'
         for n in news
     )
 
     links_html = "".join(
-        f'<li style="margin-bottom:6px;"><a href="{l.get("url")}" target="_blank" style="color:#2563eb; text-decoration:none;">{clean(l.get("title","קישור"))}</a></li>'
+        f'<li style="margin-bottom:6px; text-align:right;"><a href="{l.get("url")}" target="_blank" style="color:#2563eb; text-decoration:none; direction:rtl; text-align:right;">{clean(l.get("title","קישור"))}</a></li>'
         for l in links if l.get("url")
     )
 
     return f"""
     <html dir="rtl" lang="he">
-      <body style="font-family: Arial, Helvetica, sans-serif; background:#ffffff; color:#111827; margin:0;">
-        <div style="max-width:820px; margin:auto; padding:22px; line-height:1.9; font-size:16.5px;">
-          <h1 style="margin:0 0 6px; font-size:22px;">📊 עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')}</h1>
-          <p style="margin:0 0 16px; color:#1f2937;"><span style="font-weight:700;">תקציר:</span> {clean(tldr)}</p>
+      <body style="direction:rtl; text-align:right; font-family: Arial, Helvetica, sans-serif; background:#ffffff; color:#111827; margin:0;">
+        <div style="direction:rtl; text-align:right; max-width:820px; margin:auto; padding:22px; line-height:1.9; font-size:16.5px;">
+          
+          <h1 style="margin:0 0 12px; font-size:22px; text-align:right;">📊 עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')}</h1>
+          
+          <p style="margin:0 0 20px; color:#1f2937; text-align:right;">
+            <span style="font-weight:700;">תקציר:</span> {clean(tldr)}
+          </p>
 
-          <section style="background:#f3f4f6; padding:14px 16px; border-radius:12px; margin:14px 0 18px;">
-            <h2 style="margin:0 0 10px; font-size:18px;">שוק בזמן אמת</h2>
-            <ul style="margin:0; padding-inline-start:22px;">
+          <section style="background:#f3f4f6; padding:14px 16px; border-radius:12px; margin:16px 0 22px;">
+            <h2 style="margin:0 0 10px; font-size:18px; text-align:right;">שוק בזמן אמת</h2>
+            <ul style="margin:0; padding-inline-start:22px; direction:rtl; text-align:right;">
               <li style="margin-bottom:6px;"><b>שווי שוק כולל:</b> {clean(mk.get("cap",""))}</li>
               <li style="margin-bottom:6px;"><b>נפח מסחר 24ש׳:</b> {clean(mk.get("volume",""))}</li>
               <li style="margin-bottom:6px;"><b>בולטים 24ש׳:</b> {clean(mk.get("movers",""))}</li>
@@ -376,32 +380,45 @@ def format_email_html(summary_dict):
             </ul>
           </section>
 
-          <section style="margin:18px 0;">
-            <h2 style="margin:0 0 8px; font-size:18px;">חדשות מרכזיות</h2>
-            <ul style="margin:0; padding-inline-start:22px; list-style-type: disc;">{news_html}</ul>
+          <section style="margin:20px 0;">
+            <h2 style="margin:0 0 10px; font-size:18px; text-align:right;">חדשות מרכזיות</h2>
+            <ul style="margin:0; padding-inline-start:22px; list-style-type: disc; direction:rtl; text-align:right;">
+              {news_html}
+            </ul>
           </section>
 
-          <section style="margin:18px 0;">
-            <h2 style="margin:0 0 8px; font-size:18px;">רגולציה ואכיפה</h2>
-            <ul style="margin:0; padding-inline-start:22px;">{li_list(regulation)}</ul>
+          <section style="margin:20px 0;">
+            <h2 style="margin:0 0 10px; font-size:18px; text-align:right;">רגולציה ואכיפה</h2>
+            <ul style="margin:0; padding-inline-start:22px; direction:rtl; text-align:right;">
+              {li_list(regulation)}
+            </ul>
           </section>
 
-          <section style="margin:18px 0%;">
-            <h2 style="margin:0 0 8px; font-size:18px;">נקודות לימודיות</h2>
-            <ul style="margin:0; padding-inline-start:22px;">{li_list(points)}</ul>
+          <section style="margin:20px 0;">
+            <h2 style="margin:0 0 10px; font-size:18px; text-align:right;">נקודות לימודיות</h2>
+            <ul style="margin:0; padding-inline-start:22px; direction:rtl; text-align:right;">
+              {li_list(points)}
+            </ul>
           </section>
 
-          <section style="margin:18px 0;">
-            <h2 style="margin:0 0 8px; font-size:18px;">ראדרים להמשך</h2>
-            <ul style="margin:0; padding-inline-start:22px;">{li_list(future)}</ul>
+          <section style="margin:20px 0;">
+            <h2 style="margin:0 0 10px; font-size:18px; text-align:right;">ראדרים להמשך</h2>
+            <ul style="margin:0; padding-inline-start:22px; direction:rtl; text-align:right;">
+              {li_list(future)}
+            </ul>
           </section>
 
-          <section style="margin:18px 0;">
-            <h2 style="margin:0 0 8px; font-size:18px;">🔗 קישורים למקורות</h2>
-            <ol style="margin:0; padding-inline-start:22px;">{links_html}</ol>
+          <section style="margin:20px 0;">
+            <h2 style="margin:0 0 10px; font-size:18px; text-align:right;">🔗 קישורים למקורות</h2>
+            <ol style="margin:0; padding-inline-start:22px; direction:rtl; text-align:right;">
+              {links_html}
+            </ol>
           </section>
 
-          <p style="color:#6b7280; font-size:12px; margin-top:16px;">נשלח אוטומטית ע״י הבוט. אין לראות באמור ייעוץ או שיווק השקעות.</p>
+          <p style="color:#6b7280; font-size:12px; margin-top:16px; text-align:right;">
+            נשלח אוטומטית ע״י הבוט. אין לראות באמור ייעוץ או שיווק השקעות.
+          </p>
+
         </div>
       </body>
     </html>
