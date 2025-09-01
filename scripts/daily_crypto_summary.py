@@ -1,23 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-Daily Crypto Summary (HTML + JSON output)
-- Fetch crypto news (RSS) & market data (CoinGecko)
-- Ask OpenAI to return a structured JSON summary (Hebrew)
-- Render a clean RTL HTML email (with plain-text alternative)
-- Fallback to basic HTML if OpenAI quota/connection fails
+Daily Crypto Summary (RTL Hebrew, JSON → HTML)
+- Fetches crypto news (RSS) & market data (CoinGecko)
+- Uses OpenAI to return structured JSON in Hebrew (response_format=json_object)
+- Renders clean RTL HTML email (with plain-text alternative)
+- Falls back to basic structured HTML if OpenAI not available
+- Sends via Gmail SMTP (TLS)
 
-Environment (GitHub Secrets):
-  # Common
-  OPENAI_API_KEY      -> Optional (if missing or failing, fallback HTML is sent)
-  EMAIL_TO            -> Recipient email
+Required env (GitHub Secrets):
+  EMAIL_HOST=smtp.gmail.com
+  EMAIL_PORT=587
+  EMAIL_USER=yourname@gmail.com
+  EMAIL_PASS=<Gmail App Password 16 chars>
+  EMAIL_TO=<recipient@gmail.com>
 
-  # Gmail / SMTP
-  EMAIL_HOST          -> smtp.gmail.com
-  EMAIL_PORT          -> 587
-  EMAIL_USER          -> yourname@gmail.com
-  EMAIL_PASS          -> Gmail App Password (16 chars)
-
-Author: ChatGPT
+Optional (for full summary):
+  OPENAI_API_KEY=<sk-...>   # if missing → fallback HTML is sent
 """
 
 import os
@@ -35,12 +33,12 @@ from dateutil import parser as dateparser
 import pytz
 from bs4 import BeautifulSoup
 
-# ==== Timezone / Now ====
+# ===== Time / TZ =====
 TZ = pytz.timezone("Asia/Jerusalem")
 NOW = datetime.now(TZ)
 YEST = NOW - timedelta(days=1)
 
-# ==== Env ====
+# ===== ENV =====
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 EMAIL_HOST = os.environ.get("EMAIL_HOST")
@@ -49,7 +47,7 @@ EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_PASS = os.environ.get("EMAIL_PASS")
 EMAIL_TO   = os.environ.get("EMAIL_TO")
 
-# ==== RSS sources ====
+# ===== Sources =====
 RSS_SOURCES = [
     "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml",
     "https://cointelegraph.com/rss",
@@ -59,20 +57,24 @@ RSS_SOURCES = [
     "https://www.sec.gov/news/pressreleases.rss",
 ]
 
-# ==== Helpers ====
+
+# ===== Helpers =====
 def clean(text: str) -> str:
     if not text:
         return ""
     text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
     return " ".join(text.split())
 
+
 def pretty_money(x):
     try:
-        return f"{float(x):,.0f}"
+        v = float(x)
+        return f"{v:,.0f}"
     except Exception:
         return str(x)
 
-# ==== Step 1: Fetch news (last 24h) ====
+
+# ===== Step 1: News (24h) =====
 def fetch_news():
     items = []
     since_utc = YEST.astimezone(timezone.utc)
@@ -102,7 +104,7 @@ def fetch_news():
         except Exception as ex:
             print(f"[WARN] RSS failed for {url}: {ex}", file=sys.stderr)
 
-    # Deduplicate by (title, link) and sort desc by published
+    # Dedup & sort
     seen = set()
     deduped = []
     for it in sorted(items, key=lambda x: x["published"], reverse=True):
@@ -113,20 +115,19 @@ def fetch_news():
         deduped.append(it)
     return deduped[:120]
 
-# ==== Step 2: Fetch market data (CoinGecko) ====
+
+# ===== Step 2: Market (CoinGecko) =====
 def fetch_market():
     base = "https://api.coingecko.com/api/v3"
     headers = {"Accept": "application/json"}
     out = {}
 
-    # Global
     try:
         g = requests.get(f"{base}/global", headers=headers, timeout=30).json()
         out["global"] = g.get("data", {})
     except Exception as ex:
         print(f"[WARN] global failed: {ex}", file=sys.stderr)
 
-    # Top markets
     try:
         m = requests.get(
             f"{base}/coins/markets",
@@ -159,10 +160,11 @@ def fetch_market():
 
     return out
 
-# ==== OpenAI: ask for JSON summary ====
+
+# ===== Step 3: OpenAI JSON (Hebrew only) =====
 def generate_summary_json(news_items, market_data):
     """
-    Returns a dict with keys:
+    Returns dict:
     {
       "date": "DD.MM.YYYY",
       "tldr": "…",
@@ -171,18 +173,17 @@ def generate_summary_json(news_items, market_data):
       "regulation": ["...", "..."],
       "points": ["...", "..."],
       "future": ["...", "..."],
-      "links": ["http://...", ...]
+      "links": [{"title":"...", "url":"..."}]
     }
     """
     from openai import OpenAI
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    # Reduce payload to keep cost small
     news_for_model = [
         {
             "source": n["source"],
             "title": n["title"],
-            "summary": n["summary"][:500],
+            "summary": (n["summary"] or "")[:500],
             "link": n["link"],
             "published": n["published"]
         } for n in news_items[:50]
@@ -197,42 +198,46 @@ def generate_summary_json(news_items, market_data):
     }
 
     system_prompt = (
-        "את/ה עורך/כת ומורה לקריפטו. החזר/י אך ורק JSON חוקי בעברית, לפי הסכמה שניתנת. "
-        "אל תוסיף/י טקסט חופשי מחוץ ל-JSON."
+        "את/ה עורך/ת ומורה לקריפטו. החזר/י אך ורק JSON חוקי בעברית (RTL), ללא טקסט מחוץ ל-JSON. "
+        "כל הכותרות והסיכומים בעברית בלבד (מלבד קיצורים טכניים כמו BTC/ETH). "
+        "ללא סלנג וללא המלצות השקעה."
     )
 
     schema_hint = """
-החזר אובייקט JSON עם השדות הבאים בלבד:
+החזר/י אובייקט JSON עם המפתחות הבאים בלבד:
 {
   "date": "DD.MM.YYYY",
-  "tldr": "שורה אחת מסכמת",
+  "tldr": "שורה אחת מסכמת בעברית בלבד",
   "market": {
-    "cap": "שווי שוק כולל",
-    "volume": "נפח מסחר 24ש׳",
-    "movers": "Top movers (שורה קצרה)",
-    "btc": "BTC: מחיר, שינוי 24ש׳, טווח 24ש׳",
-    "eth": "ETH: מחיר, שינוי 24ש׳, טווח 24ש׳"
+    "cap": "שווי שוק כולל (נוסח עברית)",
+    "volume": "נפח מסחר 24ש׳ (נוסח עברית)",
+    "movers": "בולטים 24ש׳ בשורה קצרה (עברית)",
+    "btc": "BTC: מחיר, שינוי 24ש׳, טווח 24ש׳ (עברית)",
+    "eth": "ETH: מחיר, שינוי 24ש׳, טווח 24ש׳ (עברית)"
   },
   "news": [
-    { "title": "כותרת", "summary": "2–3 שורות מהות ולמה חשוב", "source": "מקור", "link": "URL" }
+    { "title": "כותרת בעברית", "summary": "2–3 שורות בעברית ולמה זה חשוב", "source": "שם מקור בעברית אם קיים", "link": "URL" }
   ],
-  "regulation": ["נקודה", "נקודה"],
-  "points": ["נקודה לימודית", "נקודה לימודית"],
-  "future": ["ראדרים להמשך", "ראדרים"],
-  "links": ["URL1", "URL2", "URL3"]
+  "regulation": ["נקודה בעברית", "נקודה בעברית"],
+  "points": ["נקודה לימודית בעברית", "נקודה לימודית בעברית"],
+  "future": ["ראדרים/דברים למעקב בעברית", "עוד נקודה"],
+  "links": [
+    {"title":"כותרת קצרה בעברית לקישור 1", "url":"https://..."},
+    {"title":"כותרת קצרה בעברית לקישור 2", "url":"https://..."}
+  ]
 }
 """
 
     user_prompt = f"""
-יצר/י תקציר יומי בעברית לפי הסכמה (JSON) שלמעלה.
+צר/י תקציר יומי בעברית לפי הסכמה שמעל.
 דרישות:
-- קצר, ברור, ללא סלנג וללא המלצות קנייה/מכירה.
-- בחר/י 5–10 חדשות משמעותיות בלבד ל-news.
-- מילא/י "links" עם קישורים שהשתמשת בהם (1–8).
-- אם נתון חסר — דלג/י עליו, אל תמציא/י.
-- "date" בפורמט DD.MM.YYYY עבור התאריך היום בישראל.
+- עברית בלבד. לתרגם כותרות וסיכומים; להשאיר BTC/ETH כסימונים.
+- בחר/י 5–10 ידיעות משמעותיות בלבד לשדה "news".
+- "links": החזר/י רשימת אובייקטים {{"title","url"}} בעברית (כותרת קצרה שמתארת את הכתבה).
+- ללא המלצות קנייה/מכירה. אם נתון חסר – לדלג.
+- "date" בפורמט DD.MM.YYYY לפי התאריך בישראל.
 
-הנתונים (JSON לחומרי רקע):
+נתוני רקע (JSON):
 {json.dumps(payload, ensure_ascii=False)}
 """
 
@@ -249,10 +254,10 @@ def generate_summary_json(news_items, market_data):
     txt = resp.output_text
     return json.loads(txt)
 
-# ==== HTML formatting (RTL) ====
+
+# ===== HTML (RTL, clean) =====
 def format_email_html(summary_dict):
-    """Build styled RTL HTML email from the JSON summary"""
-    # Safe pulls
+    """RTL Hebrew HTML email – ברור, מרווח, ללא אנגלית מיותרת."""
     tldr = summary_dict.get("tldr", "")
     mk  = summary_dict.get("market", {}) or {}
     news = summary_dict.get("news", []) or []
@@ -262,68 +267,74 @@ def format_email_html(summary_dict):
     links = summary_dict.get("links", []) or []
 
     def li_list(items):
-        return "".join(f"<li>{clean(str(x))}</li>" for x in items if x)
+        return "".join(f'<li style="margin-bottom:6px;">{clean(str(x))}</li>' for x in items if x)
 
     news_html = "".join(
-        f'<li><b>{clean(n.get("title",""))}</b> — {clean(n.get("summary",""))} '
-        f'<i>({clean(n.get("source",""))})</i></li>'
+        '<li style="margin-bottom:10px;">'
+        f'<div style="font-weight:600; margin-bottom:2px;">{clean(n.get("title",""))}</div>'
+        f'<div style="color:#374151;">{clean(n.get("summary",""))} '
+        f'<span style="color:#6b7280; font-style:italic;">({clean(n.get("source",""))})</span></div>'
+        '</li>'
         for n in news
     )
+
     links_html = "".join(
-        f'<li><a href="{link}" target="_blank">{link}</a></li>' for link in links if link
+        f'<li style="margin-bottom:6px;"><a href="{l.get("url")}" target="_blank" style="color:#2563eb; text-decoration:none;">{clean(l.get("title","קישור"))}</a></li>'
+        for l in links if l.get("url")
     )
 
-    html = f"""
+    return f"""
     <html dir="rtl" lang="he">
-      <body style="font-family: Arial, Helvetica, sans-serif; line-height:1.7; color:#1f2937; max-width:760px; margin:auto; padding:24px; background:#ffffff;">
-        <h2 style="text-align:center; margin:0 0 8px;">📊 עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')}</h2>
-        <p style="font-size:16px; margin:0 0 18px;"><b>TL;DR:</b> {clean(tldr)}</p>
+      <body style="font-family: Arial, Helvetica, sans-serif; background:#ffffff; color:#111827; margin:0;">
+        <div style="max-width:820px; margin:auto; padding:22px; line-height:1.9; font-size:16.5px;">
+          <h1 style="margin:0 0 6px; font-size:22px;">📊 עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')}</h1>
+          <p style="margin:0 0 16px; color:#1f2937;"><span style="font-weight:700;">TL;DR:</span> {clean(tldr)}</p>
 
-        <div style="background:#f1f5f9; padding:14px 16px; border-radius:10px; margin-top:14px;">
-          <h3 style="margin-top:0;">שוק בזמן אמת</h3>
-          <ul style="margin:8px 0 0 0; padding-inline-start:22px;">
-            <li>שווי שוק כולל: {clean(mk.get("cap",""))}</li>
-            <li>נפח מסחר 24ש׳: {clean(mk.get("volume",""))}</li>
-            <li>בולטי 24ש׳: {clean(mk.get("movers",""))}</li>
-            <li>{clean(mk.get("btc",""))}</li>
-            <li>{clean(mk.get("eth",""))}</li>
-          </ul>
+          <section style="background:#f3f4f6; padding:14px 16px; border-radius:12px; margin:14px 0 18px;">
+            <h2 style="margin:0 0 10px; font-size:18px;">שוק בזמן אמת</h2>
+            <ul style="margin:0; padding-inline-start:22px;">
+              <li style="margin-bottom:6px;"><b>שווי שוק כולל:</b> {clean(mk.get("cap",""))}</li>
+              <li style="margin-bottom:6px;"><b>נפח מסחר 24ש׳:</b> {clean(mk.get("volume",""))}</li>
+              <li style="margin-bottom:6px;"><b>בולטים 24ש׳:</b> {clean(mk.get("movers",""))}</li>
+              <li style="margin-bottom:6px;">{clean(mk.get("btc",""))}</li>
+              <li style="margin-bottom:0;">{clean(mk.get("eth",""))}</li>
+            </ul>
+          </section>
+
+          <section style="margin:18px 0;">
+            <h2 style="margin:0 0 8px; font-size:18px;">חדשות מרכזיות</h2>
+            <ul style="margin:0; padding-inline-start:22px; list-style-type: disc;">{news_html}</ul>
+          </section>
+
+          <section style="margin:18px 0;">
+            <h2 style="margin:0 0 8px; font-size:18px;">רגולציה ואכיפה</h2>
+            <ul style="margin:0; padding-inline-start:22px;">{li_list(regulation)}</ul>
+          </section>
+
+          <section style="margin:18px 0;">
+            <h2 style="margin:0 0 8px; font-size:18px;">נקודות לימודיות</h2>
+            <ul style="margin:0; padding-inline-start:22px;">{li_list(points)}</ul>
+          </section>
+
+          <section style="margin:18px 0;">
+            <h2 style="margin:0 0 8px; font-size:18px;">ראדרים להמשך</h2>
+            <ul style="margin:0; padding-inline-start:22px;">{li_list(future)}</ul>
+          </section>
+
+          <section style="margin:18px 0;">
+            <h2 style="margin:0 0 8px; font-size:18px;">🔗 קישורים למקורות</h2>
+            <ol style="margin:0; padding-inline-start:22px;">{links_html}</ol>
+          </section>
+
+          <p style="color:#6b7280; font-size:12px; margin-top:16px;">נשלח אוטומטית ע״י הבוט. אין לראות באמור ייעוץ או שיווק השקעות.</p>
         </div>
-
-        <div style="margin-top:18px;">
-          <h3>חדשות מרכזיות</h3>
-          <ul style="margin:8px 0 0 0; padding-inline-start:22px;">{news_html}</ul>
-        </div>
-
-        <div style="margin-top:18px;">
-          <h3>רגולציה ואכיפה</h3>
-          <ul style="margin:8px 0 0 0; padding-inline-start:22px;">{li_list(regulation)}</ul>
-        </div>
-
-        <div style="margin-top:18px;">
-          <h3>נקודות לימודיות</h3>
-          <ul style="margin:8px 0 0 0; padding-inline-start:22px;">{li_list(points)}</ul>
-        </div>
-
-        <div style="margin-top:18px;">
-          <h3>ראדרים להמשך</h3>
-          <ul style="margin:8px 0 0 0; padding-inline-start:22px;">{li_list(future)}</ul>
-        </div>
-
-        <div style="margin-top:18px;">
-          <h3>🔗 קישורים למקורות</h3>
-          <ol style="margin:8px 0 0 0; padding-inline-start:22px;">{links_html}</ol>
-        </div>
-
-        <p style="color:#6b7280; font-size:12px; margin-top:24px;">נשלח אוטומטית ע״י הבוט. אין לראות באמור ייעוץ או שיווק השקעות.</p>
       </body>
     </html>
     """
-    return html
 
-# ==== Fallback builder (when OpenAI not available) ====
+
+# ===== Fallback (basic Hebrew dict) =====
 def build_fallback_summary_dict(news_items, market):
-    # Compose a minimal but readable dict
     g = (market or {}).get("global", {})
     mktcap = (g.get("total_market_cap") or {}).get("usd")
     vol24  = (g.get("total_volume") or {}).get("usd")
@@ -337,7 +348,7 @@ def build_fallback_summary_dict(news_items, market):
         for c in movers if c.get("name") is not None
     )
 
-    # BTC / ETH lines (best-effort)
+    # BTC / ETH lines
     def find_coin(symbol):
         for c in (market or {}).get("markets", []):
             if (c.get("symbol") or "").lower() == symbol:
@@ -355,7 +366,7 @@ def build_fallback_summary_dict(news_items, market):
     btc = coin_line(find_coin("btc"), "BTC")
     eth = coin_line(find_coin("eth"), "ETH")
 
-    # News top 7
+    # News top
     news_top = news_items[:7]
     news_struct = []
     links = []
@@ -367,7 +378,7 @@ def build_fallback_summary_dict(news_items, market):
             "link": n.get("link","")
         })
         if n.get("link"):
-            links.append(n["link"])
+            links.append({"title": clean(n.get("title","קישור")), "url": n["link"]})
 
     return {
         "date": NOW.strftime("%d.%m.%Y"),
@@ -386,7 +397,8 @@ def build_fallback_summary_dict(news_items, market):
         "links": links[:8]
     }
 
-# ==== Email sending (SMTP / Gmail) ====
+
+# ===== Email (SMTP / Gmail) =====
 def send_email_html(subject, html_body, plain_fallback=""):
     host = EMAIL_HOST
     port = EMAIL_PORT
@@ -399,24 +411,24 @@ def send_email_html(subject, html_body, plain_fallback=""):
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = formataddr(("Daily Crypto Bot", user))  # For Gmail: From must equal EMAIL_USER
+    msg["From"] = formataddr(("Daily Crypto Bot", user))  # Gmail: From must equal EMAIL_USER
     msg["To"] = to
 
-    # Plain fallback + HTML
     if plain_fallback:
         msg.attach(MIMEText(plain_fallback, "plain", _charset="utf-8"))
     msg.attach(MIMEText(html_body or "<html><body>—</body></html>", "html", _charset="utf-8"))
 
     ctx = ssl.create_default_context()
     with smtplib.SMTP(host, port, timeout=60) as s:
-        s.set_debuglevel(1)  # SMTP dialogue to logs
+        s.set_debuglevel(1)  # SMTP dialog in logs
         s.ehlo(); s.starttls(context=ctx); s.ehlo()
         s.login(user, pwd)
         resp = s.sendmail(user, [to], msg.as_string())
         if resp:
             raise RuntimeError(f"SMTP sendmail returned errors: {resp}")
 
-# ==== Main ====
+
+# ===== Main =====
 def main():
     if not EMAIL_TO:
         print("Missing EMAIL_TO.", file=sys.stderr)
@@ -425,14 +437,13 @@ def main():
     news = fetch_news()
     market = fetch_market()
 
-    # Try OpenAI → JSON → HTML, with retry
+    # Try OpenAI → JSON → HTML (retry x3)
     summary_dict = None
     if OPENAI_API_KEY:
         last_err = None
         for attempt in range(3):
             try:
                 summary_dict = generate_summary_json(news, market)
-                # Basic sanity: must have keys
                 if not isinstance(summary_dict, dict) or "market" not in summary_dict:
                     raise ValueError("Model returned unexpected structure.")
                 break
@@ -441,7 +452,6 @@ def main():
                 print(f"[WARN] OpenAI JSON summary failed (attempt {attempt+1}/3): {e}", file=sys.stderr)
                 import time, random
                 time.sleep(2 * (attempt + 1) + random.random())
-
         if not summary_dict:
             print("[INFO] Falling back to basic structured dict (no OpenAI).", file=sys.stderr)
             summary_dict = build_fallback_summary_dict(news, market)
@@ -451,12 +461,11 @@ def main():
 
     subject = f"עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')}"
     html_body = format_email_html(summary_dict)
-
-    # Optional simple plain text (short)
-    plain = f"עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')}\n\nTL;DR: {summary_dict.get('tldr','')}\n\nלקבלת גרסה קריאה, פתח את המייל בתצוגת HTML."
+    plain = f"עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')}\n\nTL;DR: {summary_dict.get('tldr','')}\n\nלתצוגה מיטבית פתח/י את המייל ב-HTML."
 
     send_email_html(subject, html_body, plain_fallback=plain)
     print("Email sent (HTML).")
+
 
 if __name__ == "__main__":
     try:
