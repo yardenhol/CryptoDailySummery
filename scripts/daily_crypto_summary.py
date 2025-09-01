@@ -1,25 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-Daily Crypto Summary (RTL Hebrew, JSON → HTML)
-- Fetches crypto news (RSS) & market data (CoinGecko)
-- Uses OpenAI to return structured JSON in Hebrew (response_format=json_object)
-- Renders clean RTL HTML email (with plain-text alternative)
-- Falls back to basic structured HTML if OpenAI not available
-- Sends via Gmail SMTP (TLS)
+Daily Crypto Summary (Hebrew-only, RTL, JSON→HTML) – Gmail SMTP
 
-Required env (GitHub Secrets):
+Env (GitHub Secrets):
   EMAIL_HOST=smtp.gmail.com
   EMAIL_PORT=587
   EMAIL_USER=yourname@gmail.com
   EMAIL_PASS=<Gmail App Password 16 chars>
   EMAIL_TO=<recipient@gmail.com>
+Optional (לסיכום המלא):
+  OPENAI_API_KEY=<sk-...>   # אם חסר/נכשל → נשלח Fallback בסיסי בעברית
 
-Optional (for full summary):
-  OPENAI_API_KEY=<sk-...>   # if missing → fallback HTML is sent
+תלויות: requests, feedparser, python-dateutil, pytz, openai==1.*, beautifulsoup4
 """
 
 import os
 import sys
+import re
 import json
 import smtplib
 import ssl
@@ -57,7 +54,6 @@ RSS_SOURCES = [
     "https://www.sec.gov/news/pressreleases.rss",
 ]
 
-
 # ===== Helpers =====
 def clean(text: str) -> str:
     if not text:
@@ -65,14 +61,12 @@ def clean(text: str) -> str:
     text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
     return " ".join(text.split())
 
-
 def pretty_money(x):
     try:
         v = float(x)
         return f"{v:,.0f}"
     except Exception:
         return str(x)
-
 
 # ===== Step 1: News (24h) =====
 def fetch_news():
@@ -114,7 +108,6 @@ def fetch_news():
         seen.add(key)
         deduped.append(it)
     return deduped[:120]
-
 
 # ===== Step 2: Market (CoinGecko) =====
 def fetch_market():
@@ -160,8 +153,7 @@ def fetch_market():
 
     return out
 
-
-# ===== Step 3: OpenAI JSON (Hebrew only) =====
+# ===== Step 3: OpenAI JSON (Hebrew-only) =====
 def generate_summary_json(news_items, market_data):
     """
     Returns dict:
@@ -199,28 +191,29 @@ def generate_summary_json(news_items, market_data):
 
     system_prompt = (
         "את/ה עורך/ת ומורה לקריפטו. החזר/י אך ורק JSON חוקי בעברית (RTL), ללא טקסט מחוץ ל-JSON. "
-        "כל הכותרות והסיכומים בעברית בלבד (מלבד קיצורים טכניים כמו BTC/ETH). "
+        "תרגם/י לעברית את כל הכותרות, התקצירים והשדות שמקורם באנגלית. "
+        "השאר/י באנגלית רק סמלים טכניים (BTC, ETH) וטיקר/שמות מותג קצרים שאינם בני תרגום (למשל OKB, SOL, Nike). "
         "ללא סלנג וללא המלצות השקעה."
     )
 
     schema_hint = """
-החזר/י אובייקט JSON עם המפתחות הבאים בלבד:
+החזר/י אובייקט JSON עם המפתחות הבאים בלבד (הכל בעברית, מלבד סימונים כמו BTC/ETH וטיקרי מטבעות/מותגים):
 {
   "date": "DD.MM.YYYY",
   "tldr": "שורה אחת מסכמת בעברית בלבד",
   "market": {
-    "cap": "שווי שוק כולל (נוסח עברית)",
-    "volume": "נפח מסחר 24ש׳ (נוסח עברית)",
-    "movers": "בולטים 24ש׳ בשורה קצרה (עברית)",
-    "btc": "BTC: מחיר, שינוי 24ש׳, טווח 24ש׳ (עברית)",
-    "eth": "ETH: מחיר, שינוי 24ש׳, טווח 24ש׳ (עברית)"
+    "cap": "שווי שוק כולל (בעברית)",
+    "volume": "נפח מסחר 24ש׳ (בעברית)",
+    "movers": "בולטים 24ש׳ בשורה קצרה (בעברית)",
+    "btc": "BTC: מחיר, שינוי 24ש׳, טווח 24ש׳ (בעברית)",
+    "eth": "ETH: מחיר, שינוי 24ש׳, טווח 24ש׳ (בעברית)"
   },
   "news": [
-    { "title": "כותרת בעברית", "summary": "2–3 שורות בעברית ולמה זה חשוב", "source": "שם מקור בעברית אם קיים", "link": "URL" }
+    { "title": "כותרת בעברית", "summary": "2–3 שורות בעברית ולמה זה חשוב", "source": "שם מקור (בעברית אם אפשר)", "link": "URL" }
   ],
   "regulation": ["נקודה בעברית", "נקודה בעברית"],
   "points": ["נקודה לימודית בעברית", "נקודה לימודית בעברית"],
-  "future": ["ראדרים/דברים למעקב בעברית", "עוד נקודה"],
+  "future": ["דברים למעקב בעברית", "עוד נקודה"],
   "links": [
     {"title":"כותרת קצרה בעברית לקישור 1", "url":"https://..."},
     {"title":"כותרת קצרה בעברית לקישור 2", "url":"https://..."}
@@ -254,10 +247,92 @@ def generate_summary_json(news_items, market_data):
     txt = resp.output_text
     return json.loads(txt)
 
+# ===== Translation guard (Hebrewize) =====
+_HEB_RX = re.compile(r"[א-ת]")
+_ENG_RX = re.compile(r"[A-Za-z]")
+
+def needs_translation(s: str) -> bool:
+    if not s or not isinstance(s, str):
+        return False
+    eng = len(_ENG_RX.findall(s))
+    heb = len(_HEB_RX.findall(s))
+    return eng > 0 and heb == 0  # יש לטינית ואין עברית
+
+def translate_to_hebrew(text: str) -> str:
+    """תרגום קצר לעברית – שומר BTC/ETH וטיקרי מטבעות/מותגים באנגלית."""
+    if not OPENAI_API_KEY or not needs_translation(text):
+        return text
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        prompt = (
+            "תרגם לעברית בלבד, קצר וברור. השאר קיצורים כמו BTC/ETH וטיקרי מטבעות/מותגים באנגלית:\n"
+            f"{text}"
+        )
+        resp = client.responses.create(
+            model="gpt-4.1-mini",
+            input=[{"role":"user","content":prompt}],
+            timeout=40
+        )
+        return (resp.output_text or "").strip() or text
+    except Exception:
+        return text  # לא מפיל את הזרימה אם אין מכסה/שגיאה
+
+def hebrewize_summary_dict(d: dict) -> dict:
+    """מבטיח שכל הטקסטים בעברית ככל האפשר."""
+    if not isinstance(d, dict):
+        return d
+    d = dict(d)
+
+    # שדות פשוטים
+    for k in ["tldr"]:
+        if k in d and isinstance(d[k], str):
+            d[k] = translate_to_hebrew(d[k])
+
+    # market
+    mk = d.get("market") or {}
+    for k in ["cap","volume","movers","btc","eth"]:
+        if isinstance(mk.get(k), str):
+            mk[k] = translate_to_hebrew(mk[k])
+    d["market"] = mk
+
+    # news
+    news = d.get("news") or []
+    fixed_news = []
+    for n in news:
+        if not isinstance(n, dict):
+            continue
+        n = dict(n)
+        for fld in ["title","summary","source"]:
+            if isinstance(n.get(fld), str):
+                n[fld] = translate_to_hebrew(n[fld])
+        fixed_news.append(n)
+    d["news"] = fixed_news
+
+    # רשימות טקסט
+    for fld in ["regulation","points","future"]:
+        arr = d.get(fld) or []
+        fixed = []
+        for item in arr:
+            fixed.append(translate_to_hebrew(item) if isinstance(item, str) else item)
+        d[fld] = fixed
+
+    # links
+    links = d.get("links") or []
+    fixed_links = []
+    for l in links:
+        if isinstance(l, dict):
+            l = dict(l)
+            if isinstance(l.get("title"), str):
+                l["title"] = translate_to_hebrew(l["title"])
+            fixed_links.append(l)
+    d["links"] = fixed_links
+
+    return d
 
 # ===== HTML (RTL, clean) =====
 def format_email_html(summary_dict):
-    """RTL Hebrew HTML email – ברור, מרווח, ללא אנגלית מיותרת."""
+    """RTL Hebrew HTML email – ברור, מרווח."""
     tldr = summary_dict.get("tldr", "")
     mk  = summary_dict.get("market", {}) or {}
     news = summary_dict.get("news", []) or []
@@ -288,7 +363,7 @@ def format_email_html(summary_dict):
       <body style="font-family: Arial, Helvetica, sans-serif; background:#ffffff; color:#111827; margin:0;">
         <div style="max-width:820px; margin:auto; padding:22px; line-height:1.9; font-size:16.5px;">
           <h1 style="margin:0 0 6px; font-size:22px;">📊 עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')}</h1>
-          <p style="margin:0 0 16px; color:#1f2937;"><span style="font-weight:700;">TL;DR:</span> {clean(tldr)}</p>
+          <p style="margin:0 0 16px; color:#1f2937;"><span style="font-weight:700;">תקציר:</span> {clean(tldr)}</p>
 
           <section style="background:#f3f4f6; padding:14px 16px; border-radius:12px; margin:14px 0 18px;">
             <h2 style="margin:0 0 10px; font-size:18px;">שוק בזמן אמת</h2>
@@ -311,7 +386,7 @@ def format_email_html(summary_dict):
             <ul style="margin:0; padding-inline-start:22px;">{li_list(regulation)}</ul>
           </section>
 
-          <section style="margin:18px 0;">
+          <section style="margin:18px 0%;">
             <h2 style="margin:0 0 8px; font-size:18px;">נקודות לימודיות</h2>
             <ul style="margin:0; padding-inline-start:22px;">{li_list(points)}</ul>
           </section>
@@ -331,7 +406,6 @@ def format_email_html(summary_dict):
       </body>
     </html>
     """
-
 
 # ===== Fallback (basic Hebrew dict) =====
 def build_fallback_summary_dict(news_items, market):
@@ -397,7 +471,6 @@ def build_fallback_summary_dict(news_items, market):
         "links": links[:8]
     }
 
-
 # ===== Email (SMTP / Gmail) =====
 def send_email_html(subject, html_body, plain_fallback=""):
     host = EMAIL_HOST
@@ -427,7 +500,6 @@ def send_email_html(subject, html_body, plain_fallback=""):
         if resp:
             raise RuntimeError(f"SMTP sendmail returned errors: {resp}")
 
-
 # ===== Main =====
 def main():
     if not EMAIL_TO:
@@ -437,7 +509,7 @@ def main():
     news = fetch_news()
     market = fetch_market()
 
-    # Try OpenAI → JSON → HTML (retry x3)
+    # Try OpenAI → JSON → Hebrewize → HTML (retry x3)
     summary_dict = None
     if OPENAI_API_KEY:
         last_err = None
@@ -459,13 +531,15 @@ def main():
         print("[INFO] OPENAI_API_KEY not provided; sending fallback summary.", file=sys.stderr)
         summary_dict = build_fallback_summary_dict(news, market)
 
+    # הבטחת עברית מלאה ככל האפשר
+    summary_dict = hebrewize_summary_dict(summary_dict)
+
     subject = f"עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')}"
     html_body = format_email_html(summary_dict)
-    plain = f"עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')}\n\nTL;DR: {summary_dict.get('tldr','')}\n\nלתצוגה מיטבית פתח/י את המייל ב-HTML."
+    plain = f"עדכון יומי – קריפטו | {NOW.strftime('%d.%m.%Y')}\n\nתקציר: {summary_dict.get('tldr','')}\n\nלתצוגה מיטבית פתח/י את המייל ב-HTML."
 
     send_email_html(subject, html_body, plain_fallback=plain)
     print("Email sent (HTML).")
-
 
 if __name__ == "__main__":
     try:
