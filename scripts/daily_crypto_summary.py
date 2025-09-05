@@ -1,15 +1,22 @@
 # -*- coding: utf-8 -*-
 """
 Daily Crypto Summary (Hebrew-only, RTL, JSON→HTML) – Gmail SMTP
+Recipients managed via a repo file (config/recipients.txt by default).
 
-Env (GitHub Secrets):
+Env (GitHub Secrets / Variables):
   EMAIL_HOST=smtp.gmail.com
   EMAIL_PORT=587
   EMAIL_USER=yourname@gmail.com
   EMAIL_PASS=<Gmail App Password 16 chars>
+Optional recipients fallback (אם אין קובץ):
   EMAIL_TO=<recipient@gmail.com>
+  EMAIL_TO_LIST="a@ex.com, b@ex.com"
+
 Optional (לסיכום המלא):
-  OPENAI_API_KEY=<sk-...>   # אם חסר/נכשל → נשלח Fallback בסיסי בעברית
+  OPENAI_API_KEY=<sk-...>  # אם חסר/נכשל → נשלח Fallback בסיסי בעברית
+
+Also optional:
+  RECIPIENTS_FILE=config/recipients.txt  # אימייל בכל שורה; שורות ריקות/הערות (#) מותרות
 
 תלויות: requests, feedparser, python-dateutil, pytz, openai==1.*, beautifulsoup4
 """
@@ -42,8 +49,13 @@ EMAIL_HOST = os.environ.get("EMAIL_HOST")
 EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587")) if os.environ.get("EMAIL_PORT") else None
 EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_PASS = os.environ.get("EMAIL_PASS")
+
+# Fallback env recipients (optional)
 EMAIL_TO   = os.environ.get("EMAIL_TO")
-EMAIL_TO_LIST = os.environ.get("EMAIL_TO_LIST")
+EMAIL_TO_LIST_ENV = os.environ.get("EMAIL_TO_LIST")
+
+# Recipients file path (preferred)
+RECIPIENTS_FILE = os.environ.get("RECIPIENTS_FILE", "config/recipients.txt")
 
 # ===== Sources =====
 RSS_SOURCES = [
@@ -68,6 +80,33 @@ def pretty_money(x):
         return f"{v:,.0f}"
     except Exception:
         return str(x)
+
+def _parse_recipients_list_str(val):
+    """מחרוזת מיילים מופרדת בפסיקים/; → רשימה"""
+    if not val:
+        return []
+    parts = [p.strip() for p in re.split(r"[;,]", str(val)) if p.strip()]
+    return parts
+
+def _read_recipients_file(path: str):
+    """קורא קובץ נמענים: אימייל אחד בכל שורה; תומך בהערות (#) ושורות ריקות."""
+    recipients = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                # הסר הערות משורה (אחרי #)
+                if "#" in line:
+                    line = line.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                recipients.append(line)
+    except FileNotFoundError:
+        # יחזור ריק; נשתמש ב-fallback מה-env אם זמין
+        pass
+    return recipients
 
 # ===== Step 1: News (24h) =====
 def fetch_news():
@@ -234,6 +273,7 @@ def generate_summary_json(news_items, market_data):
 נתוני רקע (JSON):
 {json.dumps(payload, ensure_ascii=False)}
 """
+
     resp = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
@@ -246,7 +286,6 @@ def generate_summary_json(news_items, market_data):
     )
     txt = resp.choices[0].message.content
     return json.loads(txt)
-
 
 # ===== Translation guard (Hebrewize) =====
 _HEB_RX = re.compile(r"[א-ת]")
@@ -270,12 +309,12 @@ def translate_to_hebrew(text: str) -> str:
             "תרגם לעברית בלבד, קצר וברור. השאר קיצורים כמו BTC/ETH וטיקרי מטבעות/מותגים באנגלית:\n"
             f"{text}"
         )
-        resp = client.responses.create(
+        resp = client.chat.completions.create(
             model="gpt-4.1-mini",
-            input=[{"role":"user","content":prompt}],
+            messages=[{"role": "user", "content": prompt}],
             timeout=40
         )
-        return (resp.output_text or "").strip() or text
+        return (resp.choices[0].message.content or "").strip() or text
     except Exception:
         return text  # לא מפיל את הזרימה אם אין מכסה/שגיאה
 
@@ -490,12 +529,16 @@ def build_fallback_summary_dict(news_items, market):
     }
 
 # ===== Email (SMTP / Gmail) =====
-def _parse_recipients(val):
-    """ממיר מחרוזת מיילים מופרדים בפסיקים/; לרשימה נקייה."""
-    if not val:
-        return []
-    parts = [p.strip() for p in re.split(r"[;,]", str(val)) if p.strip()]
-    return parts
+def resolve_recipients():
+    """קובע למי שולחים: קובץ נמען(ים) אם קיים, אחרת מה-env (EMAIL_TO_LIST / EMAIL_TO)."""
+    file_rcpts = _read_recipients_file(RECIPIENTS_FILE)
+    if file_rcpts:
+        print(f"[INFO] Recipients file loaded: {RECIPIENTS_FILE} ({len(file_rcpts)} addresses)", file=sys.stderr)
+        return file_rcpts
+    env_rcpts = _parse_recipients_list_str(EMAIL_TO_LIST_ENV or EMAIL_TO)
+    if env_rcpts:
+        print(f"[INFO] Recipients from env: {len(env_rcpts)} addresses", file=sys.stderr)
+    return env_rcpts
 
 def send_email_html(subject, html_body, plain_fallback=""):
     host = EMAIL_HOST
@@ -503,11 +546,12 @@ def send_email_html(subject, html_body, plain_fallback=""):
     user = EMAIL_USER
     pwd  = EMAIL_PASS
 
-    # תמיכה לאחור: אם אין EMAIL_TO_LIST → נשתמש ב-EMAIL_TO
-    to_list = _parse_recipients(os.environ.get("EMAIL_TO_LIST") or EMAIL_TO)
+    to_list = resolve_recipients()
 
     if not all([host, port, user, pwd]) or not to_list:
-        raise RuntimeError("SMTP env vars missing or recipient list empty.")
+        raise RuntimeError("Missing SMTP settings or recipient list (set RECIPIENTS_FILE or EMAIL_TO/EMAIL_TO_LIST).")
+
+    print(f"[INFO] Recipients resolved: {len(to_list)} -> {to_list}", file=sys.stderr)
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -527,11 +571,11 @@ def send_email_html(subject, html_body, plain_fallback=""):
         if resp:
             raise RuntimeError(f"SMTP sendmail returned errors: {resp}")
 
-
 # ===== Main =====
 def main():
-    if not EMAIL_TO:
-        print("Missing EMAIL_TO.", file=sys.stderr)
+    # חייבים לפחות מקור אחד לנמענים: קובץ או env
+    if not (_read_recipients_file(RECIPIENTS_FILE) or EMAIL_TO_LIST_ENV or EMAIL_TO):
+        print("Missing recipients: provide RECIPIENTS_FILE or EMAIL_TO/EMAIL_TO_LIST.", file=sys.stderr)
         sys.exit(1)
 
     news = fetch_news()
