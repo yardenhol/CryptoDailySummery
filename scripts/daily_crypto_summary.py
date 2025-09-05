@@ -43,6 +43,7 @@ EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587")) if os.environ.get("EMAIL_P
 EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_PASS = os.environ.get("EMAIL_PASS")
 EMAIL_TO   = os.environ.get("EMAIL_TO")
+EMAIL_TO_LIST = os.environ.get("EMAIL_TO_LIST")
 
 # ===== Sources =====
 RSS_SOURCES = [
