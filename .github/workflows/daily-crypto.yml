@@ -33,7 +33,7 @@ jobs:
           #  exit 0
           #else
           #  echo "continue=true" >> $GITHUB_OUTPUT
-          fi
+          #fi
 
       - name: Setup Python
         if: steps.gate.outputs.continue == 'true'
