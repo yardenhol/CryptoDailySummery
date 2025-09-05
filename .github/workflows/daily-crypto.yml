@@ -25,13 +25,14 @@ jobs:
       - name: Continue only at 08:00 Asia/Jerusalem
         id: gate
         run: |
+          echo "continue=true" >> $GITHUB_OUTPUT
           NOW_HOUR=$(date +'%H')
-          if [ "$NOW_HOUR" != "08" ]; then
-            echo "Not 08:00 Asia/Jerusalem (now: $NOW_HOUR). Exiting."
-            echo "continue=false" >> $GITHUB_OUTPUT
-            exit 0
-          else
-            echo "continue=true" >> $GITHUB_OUTPUT
+          #if [ "$NOW_HOUR" != "08" ]; then
+          #  echo "Not 08:00 Asia/Jerusalem (now: $NOW_HOUR). Exiting."
+          #  echo "continue=false" >> $GITHUB_OUTPUT
+          #  exit 0
+          #else
+          #  echo "continue=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Setup Python
