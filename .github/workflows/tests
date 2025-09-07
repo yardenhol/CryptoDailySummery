@@ -1,0 +1,50 @@
+name: Daily Crypto Summary (08:00 Asia/Jerusalem)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  daily-summary:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # מגדיר TZ לריצה עצמה (לא משנה את cron של GitHub, אבל מקל על בדיקת השעה)
+      - name: Set timezone to Asia/Jerusalem
+        uses: szenius/set-timezone@v2.0
+        with:
+          timezoneLinux: "Asia/Jerusalem"
+
+      - name: Continue only at 08:00 Asia/Jerusalem
+        id: gate
+        run: |
+          echo "continue=true" >> $GITHUB_OUTPUT
+
+      - name: Setup Python
+        if: steps.gate.outputs.continue == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        if: steps.gate.outputs.continue == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests feedparser python-dateutil pytz openai==1.* beautifulsoup4
+
+      - name: Run summary script
+        if: steps.gate.outputs.continue == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          EMAIL_HOST: ${{ secrets.EMAIL_HOST }}
+          EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+          EMAIL_TO_LIST:  ${{ vars.EMAIL_TO_LIST }}      # חדש – רשימת נמענים
+          RECIPIENTS_FILE: config/recipients.txt
+        run: |
+          python scripts/daily_crypto_summary.py
