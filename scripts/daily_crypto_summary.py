@@ -65,6 +65,7 @@ RSS_SOURCES = [
     "https://cryptoslate.com/feed/",
     "https://cryptonews.com/news/feed/",
     "https://www.sec.gov/news/pressreleases.rss",
+    "https://www.cryptopolitan.com/feed/",
 ]
 
 # ===== Helpers =====
