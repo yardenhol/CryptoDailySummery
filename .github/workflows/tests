@@ -1,4 +1,4 @@
-name: Daily Crypto Summary (08:00 Asia/Jerusalem)
+name: Daily Crypto Summary test
 
 on:
   workflow_dispatch: {}
